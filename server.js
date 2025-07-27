@@ -277,6 +277,14 @@ app.get('/api/employees/me', authenticate(['employee']), async (req, res) => {
   res.json(result.rows[0]);
 });
 
+app.get('/', (req, res) => {
+  res.send('employee backend is Running...good to go');
+});
+
+app.get('/health', (req, res) => {
+  res.send('employee backend is Running...Hey there I am doing great....go ahead');
+});
+
 // Get attendance records for logged-in employee
 app.get('/api/attendance', authenticate(['employee']), async (req, res) => {
   try {
