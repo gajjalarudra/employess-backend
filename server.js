@@ -18,7 +18,19 @@ const pool = new Pool({
 
 const JWT_SECRET = 'your_secret_key'; // Keep this consistent
 
-// ✅ Login endpoint (plain-text password check)
+/*
+  === DB Schema Changes Needed ===
+  Run these commands once on your DB:
+
+  ALTER TABLE leaves ADD COLUMN rejected BOOLEAN DEFAULT FALSE;
+  ALTER TABLE leaves ADD COLUMN reject_reason TEXT;
+  ALTER TABLE leaves ADD COLUMN suggested_date DATE;
+
+  ALTER TABLE attendance ADD COLUMN rejected BOOLEAN DEFAULT FALSE;
+  ALTER TABLE attendance ADD COLUMN reject_reason TEXT;
+*/
+
+// Login endpoint (plain-text password check)
 app.post('/api/login', async (req, res) => {
   const { username, password } = req.body;
 
@@ -30,7 +42,7 @@ app.post('/api/login', async (req, res) => {
 
     const user = userRes.rows[0];
 
-    // ✅ Plain-text comparison (temporary)
+    // Plain-text comparison (temporary)
     if (user.password !== password) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
@@ -48,7 +60,7 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// ✅ Middleware to protect admin-only routes
+// Middleware to protect admin-only routes
 const authenticate = (roles = []) => {
   return (req, res, next) => {
     const auth = req.headers.authorization;
@@ -65,7 +77,7 @@ const authenticate = (roles = []) => {
   };
 };
 
-// ✅ Get all employees
+// Get all employees
 app.get('/api/employees', authenticate(['admin']), async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM employees');
@@ -75,36 +87,36 @@ app.get('/api/employees', authenticate(['admin']), async (req, res) => {
   }
 });
 
-// ✅ Create employee
+// Create employee
 app.post('/api/employees', authenticate(['admin']), async (req, res) => {
   const { name, username, email, salary, designation, joining_date } = req.body;
   try {
     await pool.query(
-  'INSERT INTO employees (name, username, email, salary, designation, joining_date) VALUES ($1, $2, $3, $4, $5, $6)',
-  [name, username, email, salary, designation, joining_date]
-);
+      'INSERT INTO employees (name, username, email, salary, designation, joining_date) VALUES ($1, $2, $3, $4, $5, $6)',
+      [name, username, email, salary, designation, joining_date]
+    );
     res.sendStatus(201);
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
 });
 
-// ✅ Update employee
+// Update employee
 app.put('/api/employees/:id', authenticate(['admin']), async (req, res) => {
   const { name, username, email, salary, designation, joining_date } = req.body;
   const id = req.params.id;
   try {
     await pool.query(
-  'UPDATE employees SET name=$1, username=$2, email=$3, salary=$4, designation=$5, joining_date=$6 WHERE id=$7',
-  [name, username, email, salary, designation, joining_date, id]
-);
+      'UPDATE employees SET name=$1, username=$2, email=$3, salary=$4, designation=$5, joining_date=$6 WHERE id=$7',
+      [name, username, email, salary, designation, joining_date, id]
+    );
     res.sendStatus(200);
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
 });
 
-// ✅ Delete employee
+// Delete employee
 app.delete('/api/employees/:id', authenticate(['admin']), async (req, res) => {
   const id = req.params.id;
   try {
@@ -143,7 +155,7 @@ app.post('/api/set-password', async (req, res) => {
   res.sendStatus(200);
 });
 
-// ✅ Clock-in endpoint
+// Clock-in endpoint
 app.post('/api/clock-in', authenticate(['employee']), async (req, res) => {
   try {
     const userId = req.user.userId;
@@ -155,7 +167,7 @@ app.post('/api/clock-in', authenticate(['employee']), async (req, res) => {
     }
 
     await pool.query(
-      'INSERT INTO attendance (employee_id, clock_in, date, clockin_approved) VALUES ($1, NOW(), $2, false)',
+      'INSERT INTO attendance (employee_id, clock_in, date, clockin_approved, rejected) VALUES ($1, NOW(), $2, false, false)',
       [userId, today]
     );
     res.sendStatus(200);
@@ -165,7 +177,7 @@ app.post('/api/clock-in', authenticate(['employee']), async (req, res) => {
   }
 });
 
-//clock-out endpoint
+// Clock-out endpoint
 app.post('/api/clock-out', authenticate(['employee']), async (req, res) => {
   const userId = req.user.userId;
   const today = new Date().toISOString().split('T')[0];
@@ -179,36 +191,39 @@ app.post('/api/clock-out', authenticate(['employee']), async (req, res) => {
   res.sendStatus(200);
 });
 
-// ✅ Apply for leave
+// Apply for leave
 app.post('/api/leaves/apply', authenticate(['employee']), async (req, res) => {
   const { leave_type, start_date, end_date, reason } = req.body;
   const userId = req.user.userId;
 
   await pool.query(
-    'INSERT INTO leaves (employee_id, leave_type, start_date, end_date, reason) VALUES ($1, $2, $3, $4, $5)',
+    'INSERT INTO leaves (employee_id, leave_type, start_date, end_date, reason, approved, rejected) VALUES ($1, $2, $3, $4, $5, false, false)',
     [userId, leave_type, start_date, end_date, reason]
   );
 
   res.sendStatus(201);
 });
 
-// ✅ Get all leaves for employee
+// Get all leaves for employee (include rejection info)
 app.get('/api/leaves', authenticate(['employee']), async (req, res) => {
   const userId = req.user.userId;
-  const result = await pool.query('SELECT * FROM leaves WHERE employee_id=$1 ORDER BY start_date DESC', [userId]);
+  const result = await pool.query(
+    'SELECT id, leave_type, start_date, end_date, reason, approved, rejected, reject_reason, suggested_date FROM leaves WHERE employee_id=$1 ORDER BY start_date DESC',
+    [userId]
+  );
   res.json(result.rows);
 });
 
 // --- Leave Approvals for Admin ---
 
-// Get all pending leave requests (approved = false)
+// Get all pending leave requests (approved = false and not rejected)
 app.get('/api/leave-requests', authenticate(['admin']), async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT l.*, e.name as employeeName, e.username 
        FROM leaves l 
        JOIN employees e ON l.employee_id = e.id
-       WHERE l.approved = false
+       WHERE l.approved = false AND (l.rejected IS NULL OR l.rejected = false)
        ORDER BY l.start_date DESC`
     );
     res.json(result.rows);
@@ -233,16 +248,40 @@ app.post('/api/leave-requests/:id/approve', authenticate(['admin']), async (req,
   }
 });
 
+// Reject a leave request by ID (new)
+app.post('/api/leave-requests/:id/reject', authenticate(['admin']), async (req, res) => {
+  const id = req.params.id;
+  const { reject_reason, suggested_date } = req.body;
+
+  try {
+    const result = await pool.query(
+      `UPDATE leaves
+       SET rejected = true, reject_reason = $1, suggested_date = $2, approved = false
+       WHERE id = $3 RETURNING *`,
+      [reject_reason, suggested_date || null, id]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Leave request not found' });
+    }
+
+    res.json({ message: 'Leave request rejected', leave: result.rows[0] });
+  } catch (err) {
+    console.error('Error rejecting leave request:', err);
+    res.status(500).json({ error: 'Error rejecting leave request' });
+  }
+});
+
 // --- Clock-in Approvals for Admin ---
 
-// Get all pending clock-in requests (clockin_approved = false)
+// Get all pending clock-in requests (clockin_approved = false and not rejected)
 app.get('/api/clockin-requests', authenticate(['admin']), async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT a.*, e.name as employeeName, e.username 
        FROM attendance a
        JOIN employees e ON a.employee_id = e.id
-       WHERE a.clockin_approved = false AND a.clock_in IS NOT NULL
+       WHERE a.clockin_approved = false AND (a.rejected IS NULL OR a.rejected = false) AND a.clock_in IS NOT NULL
        ORDER BY a.date DESC`
     );
     res.json(result.rows);
@@ -270,6 +309,31 @@ app.post('/api/clockin-requests/:id/approve', authenticate(['admin']), async (re
   }
 });
 
+// Reject a clock-in request by attendance record ID (new)
+app.post('/api/clockin-requests/:id/reject', authenticate(['admin']), async (req, res) => {
+  const id = req.params.id;
+  const { reject_reason } = req.body;
+
+  try {
+    const result = await pool.query(
+      `UPDATE attendance
+       SET rejected = true, reject_reason = $1, clockin_approved = false
+       WHERE id = $2 RETURNING *`,
+      [reject_reason, id]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Clock-in request not found' });
+    }
+
+    res.json({ message: 'Clock-in request rejected', attendance: result.rows[0] });
+  } catch (err) {
+    console.error('Error rejecting clock-in request:', err);
+    res.status(500).json({ error: 'Error rejecting clock-in request' });
+  }
+});
+
+// Get current employee info
 app.get('/api/employees/me', authenticate(['employee']), async (req, res) => {
   const userId = req.user.userId;
   const result = await pool.query('SELECT id, name, username, email, salary FROM employees WHERE id = $1', [userId]);
@@ -285,13 +349,13 @@ app.get('/health', (req, res) => {
   res.send('employee backend is Running...Hey there I am doing great....go ahead');
 });
 
-// Get attendance records for logged-in employee
+// Get attendance records for logged-in employee (include rejection info)
 app.get('/api/attendance', authenticate(['employee']), async (req, res) => {
   try {
     const userId = req.user.userId;
 
     const result = await pool.query(
-      'SELECT id, date, clock_in, clock_out, clockin_approved FROM attendance WHERE employee_id = $1 ORDER BY date DESC',
+      'SELECT id, date, clock_in, clock_out, clockin_approved as approved, rejected, reject_reason FROM attendance WHERE employee_id = $1 ORDER BY date DESC',
       [userId]
     );
 
@@ -302,8 +366,7 @@ app.get('/api/attendance', authenticate(['employee']), async (req, res) => {
   }
 });
 
-
-// ✅ Start server
+// Start server
 app.listen(5000, () => {
   console.log('Server running on port 5000');
 });
